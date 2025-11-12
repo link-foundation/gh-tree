@@ -27,10 +27,10 @@ export async function ghTree(argvInput) {
       default: 5,
       describe: "Show first/last N items per folder with ellipsis"
     })
-    .option("no-count", {
+    .option("count", {
       type: "boolean",
-      default: false,
-      describe: "Disable line counts for files"
+      default: true,
+      describe: "Include line counts for files (use --no-count to disable)"
     })
     .option("json", {
       type: "boolean",
@@ -47,14 +47,14 @@ export async function ghTree(argvInput) {
     tree = await buildRemoteTree(argv.repo, {
       depth: argv.depth,
       limit: argv.limit,
-      countLines: !argv["no-count"],
+      countLines: argv.count,
     });
   } else {
     const insideGit = await isInsideGitRepo(argv.path || ".");
     tree = await buildLocalTree(argv.path || ".", {
       depth: argv.depth,
       limit: argv.limit,
-      countLines: !argv["no-count"],
+      countLines: argv.count,
       useGit: insideGit,
     });
   }
