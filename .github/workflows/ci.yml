@@ -8,6 +8,8 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
 jobs:
   # Test on Node.js LTS (20.x)
   test-node:
