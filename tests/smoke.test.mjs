@@ -1,14 +1,9 @@
 // Minimal smoke test to exercise the CLI entry and local tree build.
+import { test, assert } from "test-anywhere";
 import { ghTree } from "../src/index.mjs";
 
-const main = async () => {
+test("CLI entry with local tree build", async () => {
   const code = await ghTree(["node", "gh-tree", "--depth", "1", "--no-count", "--json"]);
-  if (code !== 0) throw new Error("Non-zero exit code");
-  console.log("ok");
-};
-
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
+  assert.equal(code, 0, "Should exit with code 0");
 });
 

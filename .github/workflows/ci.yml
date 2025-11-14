@@ -4,18 +4,15 @@ on:
   push:
     branches:
       - main
-      - issue-* 
+      - issue-*
   pull_request:
     types: [opened, synchronize, reopened]
 
 jobs:
+  # Test on Node.js LTS (20.x)
   test-node:
-    name: Node ${{ matrix.node }} tests
+    name: Test on Node.js
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [18.x, 20.x]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,13 +20,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: '20.x'
           cache: npm
 
       - name: Install dependencies
         run: npm install
 
-      - name: Run unit tests
+      - name: Run tests
         run: npm test
 
       - name: Remote mode smoke check
@@ -38,4 +35,50 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           node bin/gh-tree.mjs --repo link-foundation/gh-tree@main --depth 1 --no-count --json > /dev/null
+
+  # Test on Bun
+  test-bun:
+    name: Test on Bun
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Run tests
+        run: bun test
+
+      - name: Remote mode smoke check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bun run bin/gh-tree.mjs --repo link-foundation/gh-tree@main --depth 1 --no-count --json > /dev/null
+
+  # Test on Deno
+  test-deno:
+    name: Test on Deno
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Run tests
+        run: deno test --allow-read --allow-env --allow-run
+
+      - name: Remote mode smoke check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          deno run --allow-read --allow-env --allow-run --allow-net bin/gh-tree.mjs --repo link-foundation/gh-tree@main --depth 1 --no-count --json > /dev/null
 
