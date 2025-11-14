@@ -1,5 +1,8 @@
 {
   "nodeModulesDir": "auto",
+  "imports": {
+    "test-anywhere": "./node_modules/test-anywhere/index.js"
+  },
   "test": {
     "exclude": ["examples/"]
   }
