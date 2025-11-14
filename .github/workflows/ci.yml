@@ -8,7 +8,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   # Test on Node.js LTS (20.x)
