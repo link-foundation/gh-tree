@@ -8,11 +8,6 @@ export async function ghTree(argvInput) {
   const argv = yargs(hideBin(argvInput ?? process.argv))
     .scriptName("gh-tree")
     .usage("$0 [path] [options]")
-    .positional("path", {
-      type: "string",
-      describe: "Start path (default: current directory)",
-      default: "."
-    })
     .option("repo", {
       type: "string",
       describe: "Remote repo spec (owner/name[@ref]) or URL"
@@ -40,7 +35,17 @@ export async function ghTree(argvInput) {
     .help()
     .parseSync();
 
-  const cwd = process.cwd();
+  // Handle positional path argument
+  const path = argv._[0] || ".";
+
+  // Validate depth and limit parameters
+  if (argv.depth <= 0 || !Number.isInteger(argv.depth)) {
+    throw new Error("--depth must be a positive integer");
+  }
+  if (argv.limit <= 0 || !Number.isInteger(argv.limit)) {
+    throw new Error("--limit must be a positive integer");
+  }
+
   let tree;
 
   if (argv.repo) {
@@ -50,8 +55,8 @@ export async function ghTree(argvInput) {
       countLines: !argv["no-count"],
     });
   } else {
-    const insideGit = await isInsideGitRepo(argv.path || ".");
-    tree = await buildLocalTree(argv.path || ".", {
+    const insideGit = await isInsideGitRepo(path);
+    tree = await buildLocalTree(path, {
       depth: argv.depth,
       limit: argv.limit,
       countLines: !argv["no-count"],

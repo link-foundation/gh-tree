@@ -1,4 +1,5 @@
 import { request } from "undici";
+import { sortNode, limitNode } from "./tree-utils.mjs";
 
 function parseRepoSpec(spec) {
   // Accept owner/name[@ref] or full URL https://github.com/owner/name/tree/ref
@@ -10,11 +11,16 @@ function parseRepoSpec(spec) {
       const name = parts[1];
       let ref = undefined;
       const idx = parts.indexOf("tree");
-      if (idx !== -1 && parts[idx + 1]) ref = parts.slice(idx + 1).join("/");
+      // Only take the first part after 'tree' as the ref (branch/tag name)
+      // Note: URL paths within the tree are not currently supported
+      if (idx !== -1 && parts[idx + 1]) ref = parts[idx + 1];
       return { owner, name, ref };
     }
   } catch {}
-  const [on, maybeRef] = spec.split("@");
+  // Split only on first @ to handle branch names containing @
+  const atIndex = spec.indexOf("@");
+  const on = atIndex === -1 ? spec : spec.substring(0, atIndex);
+  const maybeRef = atIndex === -1 ? undefined : spec.substring(atIndex + 1);
   const [owner, name] = on.split("/");
   const ref = maybeRef;
   if (!owner || !name) throw new Error("Invalid --repo spec. Use owner/name[@ref] or GitHub URL");
@@ -23,15 +29,39 @@ function parseRepoSpec(spec) {
 
 async function ghApi(path, { token } = {}) {
   const headers = { "user-agent": "gh-tree" };
-  if (token) headers.authorization = `Bearer ${token}`;
+  // Use 'token' prefix for classic PATs (most common), 'Bearer' works for fine-grained PATs and GitHub Apps
+  if (token) headers.authorization = `token ${token}`;
   const r = await request(`https://api.github.com${path}`, { headers });
-  if (r.statusCode >= 400) throw new Error(`GitHub API ${path} failed: ${r.statusCode}`);
+  if (r.statusCode >= 400) {
+    let errorMsg = `GitHub API ${path} failed: ${r.statusCode}`;
+
+    // Check for rate limiting
+    if (r.statusCode === 403) {
+      const rateLimitRemaining = r.headers["x-ratelimit-remaining"];
+      const rateLimitReset = r.headers["x-ratelimit-reset"];
+      if (rateLimitRemaining === "0" && rateLimitReset) {
+        const resetTime = new Date(parseInt(rateLimitReset) * 1000);
+        errorMsg += ` - Rate limit exceeded. Resets at ${resetTime.toLocaleString()}`;
+      }
+    }
+
+    try {
+      const errorBody = await r.body.json();
+      if (errorBody.message) errorMsg += ` - ${errorBody.message}`;
+    } catch {}
+    throw new Error(errorMsg);
+  }
   return r.body.json();
 }
 
 export async function buildRemoteTree(spec, { depth = 3, limit = 5, countLines = false } = {}) {
   const { owner, name, ref } = parseRepoSpec(spec);
   const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+
+  // Line counting is not implemented for remote repositories
+  if (countLines) {
+    console.warn("Warning: Line counting is not supported for remote repositories. Use --no-count to suppress this warning.");
+  }
 
   // Resolve default branch if no ref
   let sha = ref;
@@ -67,42 +97,9 @@ export async function buildRemoteTree(spec, { depth = 3, limit = 5, countLines =
     }
   }
 
-  function sortNode(node) {
-    if (!node.children) return;
-    node.children.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : (a.type === "dir" ? -1 : 1)));
-    for (const c of node.children) sortNode(c);
-  }
   sortNode(root);
 
-  function limitNode(node, level = 0) {
-    if (!node.children) return;
-    if (level + 1 >= depth) {
-      const filesHere = node.children.filter((c) => c.type === "file");
-      const dirsHere = node.children.filter((c) => c.type === "dir");
-      if (dirsHere.length) {
-        node.children = [
-          ...filesHere,
-          { name: `… ${dirsHere.length} director${dirsHere.length === 1 ? "y" : "ies"} omitted`, type: "omitted" }
-        ];
-      } else {
-        node.children = filesHere;
-      }
-    } else {
-      for (const c of node.children) limitNode(c, level + 1);
-    }
-    const n = node.children.length;
-    if (n > limit * 2 + 1) {
-      const head = node.children.slice(0, limit);
-      const tail = node.children.slice(n - limit);
-      const omitted = n - head.length - tail.length;
-      node.children = [
-        ...head,
-        { name: `… ${omitted} omitted …`, type: "omitted" },
-        ...tail,
-      ];
-    }
-  }
-  limitNode(root, 0);
+  limitNode(root, depth, limit, 0);
 
   return root;
 }
