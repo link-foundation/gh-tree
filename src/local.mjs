@@ -3,15 +3,16 @@ import { fileURLToPath } from "node:url";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import ignore from "ignore";
+import { sortNode, limitNode } from "./tree-utils.mjs";
 
 export async function isInsideGitRepo(startDir = ".") {
-  // Check for .git up the tree
+  // Check for .git up the tree (can be directory or file in worktrees/submodules)
   let dir = path.resolve(startDir);
   const root = path.parse(dir).root;
   while (true) {
     try {
       const stat = await fs.stat(path.join(dir, ".git"));
-      if (stat && stat.isDirectory()) return true;
+      if (stat && (stat.isDirectory() || stat.isFile())) return true;
     } catch {}
     if (dir === root) break;
     dir = path.dirname(dir);
@@ -24,9 +25,24 @@ function run(cmd, args, options = {}) {
     const child = spawn(cmd, args, { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
+    let timedOut = false;
+
+    // Set timeout to 30 seconds to prevent hanging
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, 30000);
+
     child.stdout.on("data", (d) => (out += d.toString()));
     child.stderr.on("data", (d) => (err += d.toString()));
-    child.on("close", (code) => resolve({ code, out, err }));
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (timedOut) {
+        resolve({ code: -1, out, err: err + "\nProcess timed out after 30 seconds" });
+      } else {
+        resolve({ code, out, err });
+      }
+    });
   });
 }
 
@@ -42,19 +58,34 @@ async function listFilesWithGit(startDir) {
 
 async function listFilesManually(startDir) {
   const igCache = new Map();
+  const rulesCache = new Map();
+
   async function loadIgnore(dir) {
     if (igCache.has(dir)) return igCache.get(dir);
-    const ig = ignore();
-    // Inherit parent rules
+
+    // Collect rules from current and parent directories
+    const rules = [];
     const parent = path.dirname(dir);
-    if (parent !== dir) {
-      const parentIg = await loadIgnore(parent);
-      if (parentIg) ig.add(parentIg._rules?.map((r) => r.origin) || []);
+    if (parent !== dir && rulesCache.has(parent)) {
+      rules.push(...rulesCache.get(parent));
+    } else if (parent !== dir) {
+      await loadIgnore(parent); // Ensure parent is loaded
+      if (rulesCache.has(parent)) {
+        rules.push(...rulesCache.get(parent));
+      }
     }
+
+    // Add current directory's .gitignore rules
     try {
       const txt = await fs.readFile(path.join(dir, ".gitignore"), "utf8");
-      ig.add(txt.split(/\r?\n/));
+      rules.push(...txt.split(/\r?\n/));
     } catch {}
+
+    // Create ignore instance with all rules
+    const ig = ignore();
+    if (rules.length > 0) ig.add(rules);
+
+    rulesCache.set(dir, rules);
     igCache.set(dir, ig);
     return ig;
   }
@@ -117,24 +148,43 @@ export async function buildLocalTree(startDir, { depth = 3, limit = 5, countLine
   }
 
   // Sort children alpha
-  function sortNode(node) {
-    if (!node.children) return;
-    node.children.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : (a.type === "dir" ? -1 : 1)));
-    for (const c of node.children) sortNode(c);
-  }
   sortNode(tree);
 
-  // Optionally count lines for files (best-effort, skip big files > 1.5MB)
+  // Common binary file extensions to skip
+  const binaryExtensions = new Set([
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg',
+    '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm',
+    '.zip', '.tar', '.gz', '.bz2', '.rar', '.7z',
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    '.exe', '.dll', '.so', '.dylib', '.bin',
+    '.woff', '.woff2', '.ttf', '.eot', '.otf'
+  ]);
+
+  function isBinaryFile(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    return binaryExtensions.has(ext);
+  }
+
+  // Optionally count lines for files (best-effort, skip big files > 1.5MB and binary files)
   async function countNode(node, curPath = "") {
     if (node.type === "file" && countLines) {
       try {
         const full = path.join(root, node.relPath);
         const st = await fs.stat(full);
-        if (st.size > 1_500_000) {
+
+        // Skip large files and binary files
+        if (st.size > 1_500_000 || isBinaryFile(full)) {
           node.lines = null;
         } else {
           const buf = await fs.readFile(full, "utf8");
-          node.lines = buf === "" ? 0 : buf.split("\n").length;
+          // Count lines correctly: empty file = 0 lines, file with content = number of newlines + 1 (unless ends with newline)
+          if (buf === "") {
+            node.lines = 0;
+          } else {
+            // Count newlines and add 1 if file doesn't end with newline
+            const lines = buf.split("\n").length;
+            node.lines = buf.endsWith("\n") ? lines - 1 : lines;
+          }
         }
       } catch {
         node.lines = null;
@@ -147,38 +197,7 @@ export async function buildLocalTree(startDir, { depth = 3, limit = 5, countLine
   await countNode(tree);
 
   // Apply depth limit and summarization per folder
-  function limitNode(node, level = 0) {
-    if (!node.children) return;
-    if (level + 1 >= depth) {
-      // Only keep files at this level; collapse deeper dirs as summary
-      const filesHere = node.children.filter((c) => c.type === "file");
-      const dirsHere = node.children.filter((c) => c.type === "dir");
-      if (dirsHere.length) {
-        node.children = [
-          ...filesHere,
-          { name: `… ${dirsHere.length} director${dirsHere.length === 1 ? "y" : "ies"} omitted`, type: "omitted" }
-        ];
-      } else {
-        node.children = filesHere;
-      }
-    } else {
-      for (const c of node.children) limitNode(c, level + 1);
-    }
-
-    // Summarize many entries
-    const n = node.children.length;
-    if (n > limit * 2 + 1) {
-      const head = node.children.slice(0, limit);
-      const tail = node.children.slice(n - limit);
-      const omitted = n - head.length - tail.length;
-      node.children = [
-        ...head,
-        { name: `… ${omitted} omitted …`, type: "omitted" },
-        ...tail,
-      ];
-    }
-  }
-  limitNode(tree, 0);
+  limitNode(tree, depth, limit, 0);
 
   return tree;
 }
